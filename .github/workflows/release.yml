@@ -1,10 +1,28 @@
 name: Release Workflow
 
 on:
+  # Trigger A: Automatic execution when Main Workflow finishes
   workflow_run:
     workflows: ["Main Workflow"]
     types:
       - completed
+  
+  # Trigger B: Manual execution fallback from the GitHub UI
+  workflow_dispatch:
+    inputs:
+      manual_tag:
+        description: 'Tag to release (e.g., v1.2.3)'
+        required: true
+        type: string
+      override_run_id:
+        description: 'Main Workflow Run ID (Required if downloading artifacts)'
+        required: true
+        type: string
+
+# Permissions required for Git Releases and GitHub Container Registry uploads
+permissions:
+  contents: write
+  packages: write
 
 jobs:
   prep-release:
@@ -12,92 +30,90 @@ jobs:
     outputs:
       is_valid_release: ${{ steps.validate.outputs.is_valid }}
       semver_tag: ${{ steps.validate.outputs.version }}
+      target_run_id: ${{ steps.validate.outputs.run_id }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Validate Upstream Run and Tag Presence
+      - name: Validate Trigger and Determine Tag
         id: validate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.manual_tag }}
+          INPUT_RUN_ID: ${{ inputs.override_run_id }}
           UPSTREAM_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
-          echo "========================================="
-          echo "🔍 DIAGNOSTIC LOGS"
-          echo "Upstream Run ID: ${{ github.event.workflow_run.id }}"
-          echo "Upstream Branch Name: ${{ github.event.workflow_run.head_branch }}"
-          echo "Upstream Conclusion: $UPSTREAM_CONCLUSION"
-          echo "Target Commit SHA: $COMMIT_SHA"
-          echo "========================================="
+          # SCENARIO 1: Manual execution
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "🔮 Triggered Manually via Workflow Dispatch."
+            echo "is_valid=true" >> $GITHUB_OUTPUT
+            echo "version=$INPUT_TAG" >> $GITHUB_OUTPUT
+            echo "run_id=$INPUT_RUN_ID" >> $GITHUB_OUTPUT
+            exit 0
+          fi
 
-          # Check 1: Did the main pipeline pass?
+          # SCENARIO 2: Automatic execution
+          echo "🤖 Triggered Automatically by Main Workflow."
           if [ "$UPSTREAM_CONCLUSION" != "success" ]; then
-            echo "❌ ERROR: Release skipped because Main Workflow failed or was cancelled."
             echo "is_valid=false" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          # Check 2: Safely retrieve and map repository tags to locate a SHA match
-          echo "Querying GitHub API for repository tags matching commit $COMMIT_SHA..."
-          
-          # This pulls recent tags, evaluates both lightweight and annotated tag target SHAs, and filters by commit
           TAG_NAME=$(gh api repos/${{ github.repository }}/git/matching-refs/tags/v \
             --jq '.[] | select(.object.sha == "'$COMMIT_SHA'") | .ref' | head -n 1 | sed 's|refs/tags/||' || true)
 
-          # Fallback: If it's an annotated tag, the ref points to a "tag object" instead of the commit directly
           if [ -z "$TAG_NAME" ]; then
-            echo "Checking if commit is tied to an annotated tag..."
             TAG_NAME=$(gh api repos/${{ github.repository }}/tags \
               --jq '.[] | select(.commit.sha == "'$COMMIT_SHA'") | .name' | head -n 1 || true)
           fi
 
           if [ -z "$TAG_NAME" ]; then
-            echo "⚠️  INFO: Main Workflow finished successfully, but no SemVer release tag (matching 'v*') was found pointing to commit $COMMIT_SHA."
-            echo "Stopping pipeline execution gracefully."
             echo "is_valid=false" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          # If a tag match succeeds:
-          echo "✅ SUCCESS: Valid SemVer tag found: $TAG_NAME"
           echo "is_valid=true" >> $GITHUB_OUTPUT
           echo "version=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
 
   release-docs:
     needs: prep-release
     if: ${{ needs.prep-release.outputs.is_valid_release == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Download Docs Artifact from Main Workflow
+      - name: Download Docs Artifact
         uses: actions/download-artifact@v4
         with:
           name: docs-html-artifact
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ needs.prep-release.outputs.target_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: ./docs
 
       - name: Deploy Versioned Documentation
         run: |
           echo "Deploying docs for version: ${{ needs.prep-release.outputs.semver_tag }}"
-          cat ./docs/index.html
 
   publish-app:
     needs: prep-release
     if: ${{ needs.prep-release.outputs.is_valid_release == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Download App Artifact from Main Workflow
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download App Artifact
         uses: actions/download-artifact@v4
         with:
           name: app-binary-artifact
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ needs.prep-release.outputs.target_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: ./app
 
+      # Task A: Create GitHub Release
       - name: Create GitHub Release with Binary
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Creating Release: ${{ needs.prep-release.outputs.semver_tag }}"
           gh release create ${{ needs.prep-release.outputs.semver_tag }} ./app/* --generate-notes
