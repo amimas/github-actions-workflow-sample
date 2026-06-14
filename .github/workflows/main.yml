@@ -1,0 +1,43 @@
+name: Main Workflow
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  # Job 1: Build the core software application
+  build-app:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build Application Binary
+        run: |
+          mkdir dist
+          echo "Binary Executable Data" > dist/app-binary.exe
+
+      - name: Upload App Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-binary-artifact
+          path: dist/
+
+  # Job 2: Build the production documentation pages
+  build-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Compile Documentation
+        run: |
+          mkdir docs-html
+          echo "<html>HTML Documentation Data</html>" > docs-html/index.html
+
+      - name: Upload Docs Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-html-artifact
+          path: docs-html/
