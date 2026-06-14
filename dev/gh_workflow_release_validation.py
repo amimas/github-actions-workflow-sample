@@ -77,8 +77,9 @@ def _get_run_info(run_id: str, repo: str, headers: dict, base_url: str) -> dict:
     response = requests.get(run_url, headers=headers, timeout=15)
     if response.status_code == 404:
         raise ValueError(
-            f"Run ID '{run_id}' not found in '{repo}'. "
-            f"Please verify the ID is correct and corresponds to a successful 'Main Workflow' run. "
+            f"Run ID '{run_id}' not found in repository '{repo}'. "
+            f"Note: Use the long numeric 'Run ID' found in the browser URL (e.g., 9482736451), "
+            f"not the sequential 'Run Number' (e.g., {run_id}). "
             f"History: https://github.com/{repo}/actions"
         )
     response.raise_for_status()
@@ -99,8 +100,11 @@ def _get_tag_sha(tag_name: str, repo: str, headers: dict, base_url: str) -> str:
     """
     # Using the commits endpoint to resolve the tag ref to a specific commit SHA
     tag_res = requests.get(f"{base_url}/commits/{tag_name}", headers=headers, timeout=15)
-    if tag_res.status_code == 404:
-        raise ValueError(f"The tag '{tag_name}' was not found in the repository '{repo}'. Please ensure the tag has been pushed.")
+    if tag_res.status_code in [404, 422]:
+        raise ValueError(
+            f"The tag '{tag_name}' was not found or is an invalid reference in repository '{repo}'. "
+            "Please ensure the tag exists and has been pushed to GitHub."
+        )
     tag_res.raise_for_status()
     
     return tag_res.json().get("sha")
