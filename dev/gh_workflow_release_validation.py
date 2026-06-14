@@ -167,8 +167,10 @@ def main():
             if tag_sha != run_sha:
                 conclude_validation(False, f"Mismatch! Tag '{manual_tag}' points to {tag_sha[:8]}, but Run ID {manual_run_id} was built from {run_sha[:8]}.", severity="error")
 
+        except ValueError as e:
+            conclude_validation(False, str(e), severity="error")
         except Exception as e:
-            conclude_validation(False, f"API error during manual Run ID verification: {e}", severity="error")
+            conclude_validation(False, f"Unexpected system error during manual verification: {e}", severity="error")
 
         append_github_output("version", manual_tag)
         append_github_output("run_id", manual_run_id)
@@ -196,8 +198,10 @@ def main():
         append_github_output("run_id", automated_run_id)
         conclude_validation(True, f"Valid SemVer tag located: {tag_name}")
 
+    except ValueError as e:
+        conclude_validation(False, str(e), severity="error")
     except Exception as e:
-        conclude_validation(False, f"API interaction error: {e}", severity="error")
+        conclude_validation(False, f"Unexpected system error during automated resolution: {e}", severity="error")
 
 if __name__ == "__main__":
     main()
