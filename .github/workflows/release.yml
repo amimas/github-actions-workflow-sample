@@ -1,0 +1,61 @@
+name: Release Workflow
+
+on:
+  workflow_run:
+    workflows: ["Main Workflow"]
+    types:
+      - completed
+
+jobs:
+  # STEP 1: Fast verification and SemVer parsing (No file management)
+  prep-release:
+    runs-on: ubuntu-latest
+    if: >
+      github.event.workflow_run.conclusion == 'success' && 
+      contains(github.event.workflow_run.head_branch, 'refs/tags/')
+    outputs:
+      semver_tag: ${{ steps.parse-tag.outputs.version }}
+    steps:
+      - name: Extract Semantic Version Tag
+        id: parse-tag
+        run: |
+          TAG_NAME=$(echo "${{ github.event.workflow_run.head_branch }}" | sed 's|refs/tags/||')
+          echo "version=$TAG_NAME" >> $GITHUB_OUTPUT
+
+  # STEP 2: Release Docs Job (Downloads ONLY the documentation artifact)
+  release-docs:
+    needs: prep-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Docs Artifact from Main Workflow
+        uses: actions/download-artifact@v4
+        with:
+          name: docs-html-artifact
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ./docs
+
+      - name: Deploy Versioned Documentation
+        run: |
+          echo "Deploying docs for version: ${{ needs.prep-release.outputs.semver_tag }}"
+          cat ./docs/index.html
+
+  # STEP 3: Publish App Job (Downloads ONLY the binary artifact)
+  publish-app:
+    needs: prep-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download App Artifact from Main Workflow
+        uses: actions/download-artifact@v4
+        with:
+          name: app-binary-artifact
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ./app
+
+      - name: Create GitHub Release with Binary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Creating Release: ${{ needs.prep-release.outputs.semver_tag }}"
+          gh release create ${{ needs.prep-release.outputs.semver_tag }} ./app/* --generate-notes
