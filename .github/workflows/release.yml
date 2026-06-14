@@ -35,48 +35,23 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Validate Trigger and Determine Tag
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Run Python Validation Script
         id: validate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          INPUT_TAG: ${{ inputs.manual_tag }}
-          INPUT_RUN_ID: ${{ inputs.override_run_id }}
-          UPSTREAM_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
-        run: |
-          # SCENARIO 1: Manual execution
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "🔮 Triggered Manually via Workflow Dispatch."
-            echo "is_valid=true" >> $GITHUB_OUTPUT
-            echo "version=$INPUT_TAG" >> $GITHUB_OUTPUT
-            echo "run_id=$INPUT_RUN_ID" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          # SCENARIO 2: Automatic execution
-          echo "🤖 Triggered Automatically by Main Workflow."
-          if [ "$UPSTREAM_CONCLUSION" != "success" ]; then
-            echo "is_valid=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          TAG_NAME=$(gh api repos/${{ github.repository }}/git/matching-refs/tags/v \
-            --jq '.[] | select(.object.sha == "'$COMMIT_SHA'") | .ref' | head -n 1 | sed 's|refs/tags/||' || true)
-
-          if [ -z "$TAG_NAME" ]; then
-            TAG_NAME=$(gh api repos/${{ github.repository }}/tags \
-              --jq '.[] | select(.commit.sha == "'$COMMIT_SHA'") | .name' | head -n 1 || true)
-          fi
-
-          if [ -z "$TAG_NAME" ]; then
-            echo "is_valid=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          echo "is_valid=true" >> $GITHUB_OUTPUT
-          echo "version=$TAG_NAME" >> $GITHUB_OUTPUT
-          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ inputs.manual_tag }}
+          MANUAL_ID: ${{ inputs.override_run_id }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          AUTO_ID: ${{ github.event.workflow_run.id }}
+        run: uv run --script dev/gh_workflow_release_validation.py
 
   release-docs:
     needs: prep-release
@@ -111,9 +86,29 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: ./app
 
+      - name: Build and Push Docker Image
+        run: |
+          echo "This step would build and push a Docker image to ghcr.io/${{ github.repository }}:${{ needs.prep-release.outputs.semver_tag }}"
+
       # Task A: Create GitHub Release
       - name: Create GitHub Release with Binary
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create ${{ needs.prep-release.outputs.semver_tag }} ./app/* --generate-notes
+
+  publish-pypi:
+    needs: prep-release
+    if: ${{ needs.prep-release.outputs.is_valid_release == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Mandatory for trusted publishing
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Simulate PyPI Publishing
+        run: echo "This step would publish the package to PyPI for version ${{ needs.prep-release.outputs.semver_tag }}"
