@@ -35,11 +35,27 @@ def append_github_output(key: str, value: str):
     else:
         print(f"DEBUG [Local]: GITHUB_OUTPUT not set. Result -> {key}={value}")
 
-def fail_gate(message: str):
-    """Logs an error and exits the workflow job cleanly but marked as invalid."""
-    print(f"❌ ERROR: {message}")
-    append_github_output("is_valid", "false")
-    sys.exit(0)
+def conclude_validation(is_valid: bool, message: str, severity: str = "notice"):
+    """
+    Logs the outcome, creates a GitHub Job Summary, and exits.
+    'severity' can be 'notice', 'warning', or 'error'.
+    'error' will result in an exit code 1 (Red build).
+    """
+    icon = "✅" if is_valid else ("❌" if severity == "error" else "⏭️")
+    print(f"{icon} {severity.upper()}: {message}")
+
+    # GitHub Workflow Command to highlight in the UI
+    print(f"::{severity}::{message}")
+
+    # Write to Job Summary (Visible on the run overview page)
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_file:
+        with open(summary_file, "a", encoding="utf-8") as f:
+            status = "VALID" if is_valid else "SKIPPED"
+            f.write(f"### Release Validation: {status}\n{message}\n")
+
+    append_github_output("is_valid", "true" if is_valid else "false")
+    sys.exit(1 if severity == "error" else 0)
 
 def main():
     event_name = os.environ.get("EVENT")
@@ -52,7 +68,7 @@ def main():
     automated_run_id = os.environ.get("AUTO_ID")
 
     if not event_name or not repo:
-        fail_gate(f"Missing required environment variables. EVENT: '{event_name}', REPO: '{repo}'.")
+        conclude_validation(False, f"Missing required environment variables. EVENT: '{event_name}', REPO: '{repo}'.", severity="error")
 
     if not token:
         print("⚠️  Warning: GH_TOKEN is not set. API calls will likely fail.")
@@ -67,21 +83,20 @@ def main():
     if event_name == "workflow_dispatch":
         print("🔮 Triggered Manually via Workflow Dispatch.")
         if not manual_tag or not manual_run_id or not re.match(r"^[0-9]+$", manual_run_id):
-            fail_gate("Manual validation failed. Ensure tag is present and run ID is numeric.")
+            conclude_validation(False, "Manual validation failed. Ensure tag is present and run ID is numeric.", severity="error")
         
-        print(f"✅ Validation passed. Target Tag: {manual_tag} | Run ID: {manual_run_id}")
-        append_github_output("is_valid", "true")
         append_github_output("version", manual_tag)
         append_github_output("run_id", manual_run_id)
+        conclude_validation(True, f"Manual validation passed. Target Tag: {manual_tag} | Run ID: {manual_run_id}")
         return
 
     # LOGIC PATH B: Automated Trigger
     if event_name != "workflow_run":
-        fail_gate(f"Unsupported EVENT type: '{event_name}'.")
+        conclude_validation(False, f"Unsupported EVENT type: '{event_name}'.", severity="error")
 
     print("🤖 Triggered Automatically by Main Workflow.")
     if upstream_conclusion != "success":
-        fail_gate(f"Trigger skipped. Upstream conclusion was '{upstream_conclusion}'.")
+        conclude_validation(False, f"Trigger skipped. Upstream conclusion was '{upstream_conclusion}'.", severity="notice")
 
     print(f"Querying GitHub API for repository tags matching commit {commit_sha}...")
     try:
@@ -103,15 +118,14 @@ def main():
             tag_name = next((tag.get("name") for tag in response.json() if tag.get("commit", {}).get("sha") == commit_sha), "")
 
         if not tag_name:
-            fail_gate(f"No SemVer tag pointed to commit {commit_sha}.")
+            conclude_validation(False, f"No SemVer tag pointed to commit {commit_sha}. Skipping release.", severity="notice")
 
-        print(f"✅ SUCCESS: Valid SemVer tag located: {tag_name}")
-        append_github_output("is_valid", "true")
         append_github_output("version", tag_name)
         append_github_output("run_id", automated_run_id)
+        conclude_validation(True, f"Valid SemVer tag located: {tag_name}")
 
     except Exception as e:
-        fail_gate(f"API interaction error: {e}")
+        conclude_validation(False, f"API interaction error: {e}", severity="error")
 
 if __name__ == "__main__":
     main()
