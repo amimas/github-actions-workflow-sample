@@ -7,24 +7,57 @@ on:
       - completed
 
 jobs:
-  # STEP 1: Fast verification and SemVer parsing (No file management)
   prep-release:
     runs-on: ubuntu-latest
-    if: >
-      github.event.workflow_run.conclusion == 'success' && 
-      contains(github.event.workflow_run.head_branch, 'refs/tags/')
     outputs:
-      semver_tag: ${{ steps.parse-tag.outputs.version }}
+      is_valid_release: ${{ steps.validate.outputs.is_valid }}
+      semver_tag: ${{ steps.validate.outputs.version }}
     steps:
-      - name: Extract Semantic Version Tag
-        id: parse-tag
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Validate Upstream Run and Tag Presence
+        id: validate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          TAG_NAME=$(echo "${{ github.event.workflow_run.head_branch }}" | sed 's|refs/tags/||')
+          echo "========================================="
+          echo "🔍 DIAGNOSTIC LOGS"
+          echo "Upstream Run ID: ${{ github.event.workflow_run.id }}"
+          echo "Upstream Branch Name: ${{ github.event.workflow_run.head_branch }}"
+          echo "Upstream Conclusion: $UPSTREAM_CONCLUSION"
+          echo "Target Commit SHA: $COMMIT_SHA"
+          echo "========================================="
+
+          # Check 1: Did the main pipeline pass?
+          if [ "$UPSTREAM_CONCLUSION" != "success" ]; then
+            echo "❌ ERROR: Release skipped because Main Workflow failed or was cancelled."
+            echo "is_valid=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Check 2: Fetch tags associated with this commit using GitHub API
+          echo "Checking GitHub API for tags associated with commit $COMMIT_SHA..."
+          TAG_NAME=$(gh api repos/${{ github.repository }}/commits/$COMMIT_SHA/refs --jq '.[].ref' | grep 'refs/tags/v' | head -n 1 | sed 's|refs/tags/||' || true)
+
+          if [ -z "$TAG_NAME" ]; then
+            echo "⚠️  INFO: Main Workflow finished successfully, but no SemVer release tag (matching 'v*') was found on this commit."
+            echo "Stopping pipeline execution gracefully."
+            echo "is_valid=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # If everything passes:
+          echo "✅ SUCCESS: Valid SemVer tag found: $TAG_NAME"
+          echo "is_valid=true" >> $GITHUB_OUTPUT
           echo "version=$TAG_NAME" >> $GITHUB_OUTPUT
 
-  # STEP 2: Release Docs Job (Downloads ONLY the documentation artifact)
   release-docs:
     needs: prep-release
+    # This job now relies on the explicit step evaluation output
+    if: ${{ needs.prep-release.outputs.is_valid_release == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Download Docs Artifact from Main Workflow
@@ -40,9 +73,10 @@ jobs:
           echo "Deploying docs for version: ${{ needs.prep-release.outputs.semver_tag }}"
           cat ./docs/index.html
 
-  # STEP 3: Publish App Job (Downloads ONLY the binary artifact)
   publish-app:
     needs: prep-release
+    # This job now relies on the explicit step evaluation output
+    if: ${{ needs.prep-release.outputs.is_valid_release == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Download App Artifact from Main Workflow
