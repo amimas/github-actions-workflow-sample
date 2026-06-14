@@ -76,14 +76,18 @@ def _get_run_info(run_id: str, repo: str, headers: dict, base_url: str) -> dict:
     run_url = f"{base_url}/actions/runs/{run_id}"
     response = requests.get(run_url, headers=headers, timeout=15)
     if response.status_code == 404:
-        raise ValueError(f"Run ID {run_id} not found in {repo}.")
+        raise ValueError(
+            f"Run ID '{run_id}' not found in '{repo}'. "
+            f"Please verify the ID is correct and corresponds to a successful 'Main Workflow' run. "
+            f"History: https://github.com/{repo}/actions"
+        )
     response.raise_for_status()
     
     run_data = response.json()
     if run_data.get("conclusion") != "success":
-        raise ValueError(f"Run {run_id} has conclusion '{run_data.get('conclusion')}'. Only successful runs can be released.")
+        raise ValueError(f"Run ID '{run_id}' has a conclusion of '{run_data.get('conclusion')}'. Only successful workflow runs can be used for a release.")
     if run_data.get("name") != "Main Workflow":
-        raise ValueError(f"Run {run_id} belongs to '{run_data.get('name')}', but artifacts must come from 'Main Workflow'.")
+        raise ValueError(f"Run ID '{run_id}' belongs to workflow '{run_data.get('name')}', but artifacts must originate from the 'Main Workflow'.")
     
     return run_data
 
@@ -96,7 +100,7 @@ def _get_tag_sha(tag_name: str, repo: str, headers: dict, base_url: str) -> str:
     # Using the commits endpoint to resolve the tag ref to a specific commit SHA
     tag_res = requests.get(f"{base_url}/commits/{tag_name}", headers=headers, timeout=15)
     if tag_res.status_code == 404:
-        raise ValueError(f"Tag '{tag_name}' not found in repository.")
+        raise ValueError(f"The tag '{tag_name}' was not found in the repository '{repo}'. Please ensure the tag has been pushed.")
     tag_res.raise_for_status()
     
     return tag_res.json().get("sha")
@@ -153,15 +157,15 @@ def main():
     if event_name == "workflow_dispatch":
         print("🔮 Triggered Manually via Workflow Dispatch.")
         if not manual_tag or not manual_run_id or not re.match(r"^[0-9]+$", manual_run_id):
-            conclude_validation(False, "Manual validation failed. Ensure tag is present and run ID is numeric.", severity="error")
+            conclude_validation(False, "Invalid input: A version tag and a numeric Run ID are required for manual releases.", severity="error")
         
         # Explicitly verify the provided run and tag metadata via the API
         try:
-            print(f"Verifying Run ID {manual_run_id} via GitHub API...")
+            print(f"Validating Run ID '{manual_run_id}'...")
             run_data = _get_run_info(manual_run_id, repo, headers, base_url)
             run_sha = run_data.get("head_sha")
 
-            print(f"Verifying if tag '{manual_tag}' matches commit {run_sha}...")
+            print(f"Verifying if tag '{manual_tag}' aligns with commit {run_sha[:8]}...")
             tag_sha = _get_tag_sha(manual_tag, repo, headers, base_url)
 
             if tag_sha != run_sha:
