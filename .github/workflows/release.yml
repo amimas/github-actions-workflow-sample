@@ -38,25 +38,34 @@ jobs:
             exit 0
           fi
 
-          # Check 2: Fetch tags associated with this commit using GitHub API
-          echo "Checking GitHub API for tags associated with commit $COMMIT_SHA..."
-          TAG_NAME=$(gh api repos/${{ github.repository }}/commits/$COMMIT_SHA/refs --jq '.[].ref' | grep 'refs/tags/v' | head -n 1 | sed 's|refs/tags/||' || true)
+          # Check 2: Safely retrieve and map repository tags to locate a SHA match
+          echo "Querying GitHub API for repository tags matching commit $COMMIT_SHA..."
+          
+          # This pulls recent tags, evaluates both lightweight and annotated tag target SHAs, and filters by commit
+          TAG_NAME=$(gh api repos/${{ github.repository }}/git/matching-refs/tags/v \
+            --jq '.[] | select(.object.sha == "'$COMMIT_SHA'") | .ref' | head -n 1 | sed 's|refs/tags/||' || true)
+
+          # Fallback: If it's an annotated tag, the ref points to a "tag object" instead of the commit directly
+          if [ -z "$TAG_NAME" ]; then
+            echo "Checking if commit is tied to an annotated tag..."
+            TAG_NAME=$(gh api repos/${{ github.repository }}/tags \
+              --jq '.[] | select(.commit.sha == "'$COMMIT_SHA'") | .name' | head -n 1 || true)
+          fi
 
           if [ -z "$TAG_NAME" ]; then
-            echo "⚠️  INFO: Main Workflow finished successfully, but no SemVer release tag (matching 'v*') was found on this commit."
+            echo "⚠️  INFO: Main Workflow finished successfully, but no SemVer release tag (matching 'v*') was found pointing to commit $COMMIT_SHA."
             echo "Stopping pipeline execution gracefully."
             echo "is_valid=false" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          # If everything passes:
+          # If a tag match succeeds:
           echo "✅ SUCCESS: Valid SemVer tag found: $TAG_NAME"
           echo "is_valid=true" >> $GITHUB_OUTPUT
           echo "version=$TAG_NAME" >> $GITHUB_OUTPUT
 
   release-docs:
     needs: prep-release
-    # This job now relies on the explicit step evaluation output
     if: ${{ needs.prep-release.outputs.is_valid_release == 'true' }}
     runs-on: ubuntu-latest
     steps:
@@ -75,7 +84,6 @@ jobs:
 
   publish-app:
     needs: prep-release
-    # This job now relies on the explicit step evaluation output
     if: ${{ needs.prep-release.outputs.is_valid_release == 'true' }}
     runs-on: ubuntu-latest
     steps:
